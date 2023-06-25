@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Text;
 using UAssetAPI.ExportTypes;
 using UAssetAPI.PropertyTypes.Structs;
@@ -389,10 +390,37 @@ namespace UAssetAPI.IO
 					hashes[i] = reader.ReadUInt64();
 				}
 
+                Dictionary<ulong, FString> ScriptImportHashMap = new Dictionary<ulong, FString>();
+				Dictionary<ulong, FString> PackageImportHashMap = new Dictionary<ulong, FString>();
+				Dictionary<ulong, FString> NullImportHashMap = new Dictionary<ulong, FString>();
+
+                //Make a map of possible Script Imports
+                foreach (var script in nameMap.Where(x => x.Value.Contains("/Script/")))
+                {
+					ScriptImportHashMap.Add(FPackageObjectIndex.Pack(EPackageObjectIndexType.ScriptImport, CRCGenerator.GenerateImportHashFromObjectPath(script)), script);
+					foreach (var name in nameMap.Where(y => !y.Value.Contains("/Game/") && !y.Value.Contains("/Script/")))
+					{
+                        FString fString = new FString($"{script}/{name}");
+                        ulong ImportHash = FPackageObjectIndex.Pack(EPackageObjectIndexType.ScriptImport, CRCGenerator.GenerateImportHashFromObjectPath(fString));
+						ScriptImportHashMap.Add(ImportHash, fString);
+					}
+				}
+
+				//Make a map of possible Package Imports
+				foreach (var script in nameMap.Where(x => x.Value.Contains("/Game/")))
+                {
+                    foreach (var name in nameMap.Where(y => !y.Value.Contains("/Game/") && !y.Value.Contains("/Script/")))
+                    {
+						FString fString = new FString($"{script}.{name}");
+						ulong ImportHash = FPackageObjectIndex.Pack(EPackageObjectIndexType.PackageImport, CRCGenerator.GenerateImportHashFromObjectPath(fString));
+						PackageImportHashMap.Add(ImportHash, fString);
+					}
+                }
+
 				ClearNameIndexList();
 				foreach (var entry in nameMap)
                 {
-					AddCityHash64MapEntryRaw(entry.Value);
+                    NullImportHashMap.Add(FPackageObjectIndex.Pack(EPackageObjectIndexType.Null, CRCGenerator.GenerateImportHashFromObjectPath(entry)), entry);
 					AddNameReference(entry, true);
 				}
 
@@ -475,8 +503,29 @@ namespace UAssetAPI.IO
                 Imports = new List<Import>();
                 foreach (var zenImport in ZenImports)
                 {
-                    Imports.Add(zenImport.ToImport(this));
-                }
+					var res = new Import();
+                    FString ObjectName = new FString();
+					switch (zenImport.Type)
+                    {
+						case EPackageObjectIndexType.Export:
+							throw new InvalidOperationException("Attempt to call ToImport on an FPackageObjectIndex with type " + zenImport.Type);
+                        case EPackageObjectIndexType.ScriptImport:
+                            ScriptImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
+                            break;
+                        case EPackageObjectIndexType.PackageImport:
+                            PackageImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
+                            break;
+                        case EPackageObjectIndexType.Null:
+                            NullImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
+                            break;
+					}
+                    res.ObjectName = new FName(this, Path.GetFileNameWithoutExtension(ObjectName.Value));
+                    res.ClassPackage = new FName(this, Path.GetDirectoryName(ObjectName.Value).Replace("\\", "/") + "/");
+					res.ClassName = FName.DefineDummy(this, ObjectName);
+					res.OuterIndex = new FPackageIndex(0);
+
+                    Imports.Add(res);
+				}
 
 				//Lets go back to those exports fill them in with proper data
 				reader.BaseStream.Seek(ExportMapOffset, SeekOrigin.Begin);
