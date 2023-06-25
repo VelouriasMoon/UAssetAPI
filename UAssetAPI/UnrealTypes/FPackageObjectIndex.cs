@@ -157,7 +157,7 @@ namespace UAssetAPI.UnrealTypes
 
         public static ulong Pack(EPackageObjectIndexType typ, ulong hash)
         {
-            return typ == EPackageObjectIndexType.Null ? ulong.MaxValue : (((ulong)typ << TypeShift) | hash);
+            return (((ulong)typ << TypeShift) | hash);
         }
 
         public static ulong Pack(FPackageObjectIndex unpacked)
