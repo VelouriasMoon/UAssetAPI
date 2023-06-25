@@ -5,6 +5,7 @@ using System.Data;
 using System.IO;
 using System.Text;
 using UAssetAPI.ExportTypes;
+using UAssetAPI.PropertyTypes.Structs;
 using UAssetAPI.UnrealTypes;
 using UAssetAPI.Unversioned;
 
@@ -184,9 +185,12 @@ namespace UAssetAPI.IO
         public ulong[] ImportedPublicExportHashes;
 
         /// <summary>
-        /// Map of object imports. UAssetAPI used to call these "links."
+        /// Map of object ZenImports. UAssetAPI used to call these "links."
         /// </summary>
-        public List<FPackageObjectIndex> Imports;
+        public List<FPackageObjectIndex> ZenImports;
+        public List<Import> Imports;
+
+        public List<Tuple<FPackageObjectIndex, List<FInternalArc>>> GraphData;
 
         private Dictionary<ulong, string> CityHash64Map = new Dictionary<ulong, string>();
         private void AddCityHash64MapEntryRaw(string val)
@@ -283,10 +287,10 @@ namespace UAssetAPI.IO
 
                 // import map
                 reader.BaseStream.Seek(ImportMapOffset, SeekOrigin.Begin);
-                Imports = new List<FPackageObjectIndex>();
+                ZenImports = new List<FPackageObjectIndex>();
                 for (int i = 0; i < (ExportMapOffset - ImportMapOffset) / sizeof(ulong); i++)
                 {
-                    Imports.Add(FPackageObjectIndex.Read(reader));
+                    ZenImports.Add(FPackageObjectIndex.Read(reader));
                 }
 
                 // export map
@@ -334,13 +338,28 @@ namespace UAssetAPI.IO
                     externalArcsList.Add(externalArcsThese);
                 }
                 externalArcs = externalArcsList.ToArray();
-            }
+
+				// end summary
+				foreach (FExportBundleHeader headr in exportBundleHeaders)
+				{
+					for (uint i = 0u; i < headr.EntryCount; i++)
+					{
+						FExportBundleEntry entry = exportBundleEntries[headr.FirstEntryIndex + i];
+						switch (entry.CommandType)
+						{
+							case EExportCommandType.ExportCommandType_Serialize:
+								ConvertExportToChildExportAndRead(reader, (int)entry.LocalExportIndex);
+								break;
+						}
+					}
+				}
+			}
             else
             {
                 Name = reader.ReadFName();
                 SourceName = reader.ReadFName();
                 PackageFlags = (EPackageFlags)reader.ReadUInt32();
-                uint CookedHeaderSize = reader.ReadUInt32();
+                uint CookedHeaderSize = reader.ReadUInt32(); //Cooked header size of the ORIGINAL UAsset before being turned into a ZenAsset, why???
                 int NameMapNamesOffset = reader.ReadInt32();
                 int NameMapNamesSize = reader.ReadInt32();
                 int NameMapHashesOffset = reader.ReadInt32();
@@ -352,55 +371,145 @@ namespace UAssetAPI.IO
                 int GraphDataSize = reader.ReadInt32();
 
                 // name map batch
-                reader.ReadNameBatch(VerifyHashes, out HashVersion, out List<FString> tempNameMap);
-                foreach (var entry in tempNameMap)
+                // No counts so let's just do this in place
+                reader.BaseStream.Seek(NameMapNamesOffset, SeekOrigin.Begin);
+                int NameCount = (NameMapHashesSize / 8) - 1;
+                List<FString> nameMap = new List<FString>();
+				for (int i = 0; i < NameCount; i++)
+				{
+					FSerializedNameHeader fSerializedNameHeader = FSerializedNameHeader.Read(reader);
+                    nameMap.Add(reader.ReadNameMapString(fSerializedNameHeader, out _));
+				}
+
+                //aligned by 8 so jump to hash table
+				reader.BaseStream.Seek(NameMapHashesOffset, SeekOrigin.Begin);
+				ulong[] hashes = new ulong[NameCount];
+				for (int i = 0; i < NameCount; i++)
                 {
-                    AddCityHash64MapEntryRaw(entry.Value);
-                    AddNameReference(entry, true);
+					hashes[i] = reader.ReadUInt64();
+				}
+
+				ClearNameIndexList();
+				foreach (var entry in nameMap)
+                {
+					AddCityHash64MapEntryRaw(entry.Value);
+					AddNameReference(entry, true);
+				}
+
+                // import map and export map
+				// Let's skip this for now because of the funky SerialOffset and hashes
+
+				// export bundle entries
+				// weird parsing here, combine both bundles and headers
+                // Stores each bundle header Then it stores the bundle entries which seem to line up with the total count of bundles nodes
+                // Reading this is gonna be weird since there's no bundle count stored so we're gonna have to guess when it stops
+				reader.BaseStream.Seek(ExportBundlesOffset, SeekOrigin.Begin);
+
+                uint ExportBundleEntryCount = 0;
+                uint LastCount = 0;
+				var exportBundleHeadersList = new List<FExportBundleHeader>();
+
+				while (ExportBundleEntryCount <= LastCount)
+                {
+                    //There's no Serialized offset to these older bundle headers
+                    FExportBundleHeader bundleHeader = new FExportBundleHeader()
+                    {
+                        FirstEntryIndex = reader.ReadUInt32(),
+                        EntryCount = reader.ReadUInt32(),
+                    };
+                    exportBundleHeadersList.Add(bundleHeader);
+                    ExportBundleEntryCount += bundleHeader.EntryCount;
                 }
+                exportBundleHeaders = exportBundleHeadersList.ToArray();
+
+                //now we have the headers done we can read the entries
+                var ExportBundleEntryList = new List<FExportBundleEntry>();
+                for (int i = 0; i < ExportBundleEntryCount; i++)
+                {
+                    ExportBundleEntryList.Add(FExportBundleEntry.Read(reader));
+                }
+                exportBundleEntries = ExportBundleEntryList.ToArray();
+
+				// graph data (?)
+				// Graph data seems to hold ZenImports of game files, these ZenImports will have an FPackageObjectIndex hash of -1 in the import map data
+				// and there actual hashes are stored in this section instead, but why?
+				reader.BaseStream.Seek(GraphDataOffset, SeekOrigin.Begin);
+                GraphData = new List<Tuple<FPackageObjectIndex, List<FInternalArc>>>();
+                uint ArrayCount = reader.ReadUInt32();
+                for (int i = 0;  (i < ArrayCount); i++)
+                {
+					FPackageObjectIndex ImportedPackageID = FPackageObjectIndex.Read(reader);
+                    List<FInternalArc> FArcs = new List<FInternalArc>();
+                    uint ArcCount = reader.ReadUInt32();
+                    for (int j = 0; j < ArcCount; j++)
+                    {
+                        FArcs.Add(FInternalArc.Read(reader));
+                    }
+					var GraphNode = new Tuple<FPackageObjectIndex, List<FInternalArc>>(ImportedPackageID, FArcs);
+                    GraphData.Add(GraphNode);
+				}
+
+                //Now we are at the end of the header we can find the REAL Cooked header size
+                long RealCookedHeaderSize = reader.BaseStream.Position;
+                long RealSerialOffset = CookedHeaderSize - RealCookedHeaderSize;
 
                 // import map
-                reader.BaseStream.Seek(ImportMapOffset, SeekOrigin.Begin);
-                Imports = new List<FPackageObjectIndex>();
-                for (int i = 0; i < (ExportMapOffset - ImportMapOffset) / sizeof(ulong); i++)
-                {
-                    Imports.Add(FPackageObjectIndex.Read(reader));
-                }
+				reader.BaseStream.Seek(ImportMapOffset, SeekOrigin.Begin);
+				ZenImports = new List<FPackageObjectIndex>();
+                int ImportCount = (ExportMapOffset - ImportMapOffset) / sizeof(ulong);
+				for (int i = 0; i < ImportCount; i++)
+				{
+                    var zenImport = FPackageObjectIndex.Read(reader);
 
-                // export map
-                reader.BaseStream.Seek(ExportMapOffset, SeekOrigin.Begin);
-                Exports = new List<Export>();
-                int exportMapEntrySize = (int)Export.GetExportMapEntrySize(this);
-                for (int i = 0; i < (ExportBundlesOffset - ExportMapOffset) / exportMapEntrySize; i++)
-                {
-                    var newExport = new Export(this, new byte[0]);
-                    newExport.ReadExportMapEntry(reader);
-                    Exports.Add(newExport);
-                }
-
-                // export bundle entries
-                reader.BaseStream.Seek(ExportBundlesOffset, SeekOrigin.Begin);
-                // weird parsing here, combine both bundles and headers
-
-                // graph data (?)
-
-            }
-
-            // end summary
-            
-            foreach (FExportBundleHeader headr in exportBundleHeaders)
-            {
-                for (uint i = 0u; i < headr.EntryCount; i++)
-                {
-                    FExportBundleEntry entry = exportBundleEntries[headr.FirstEntryIndex + i];
-                    switch (entry.CommandType)
+                    int j = 0;
+                    if (zenImport.Hash == 0xFFFFFFFFFFFFFFFF)
                     {
-                        case EExportCommandType.ExportCommandType_Serialize:
-                            ConvertExportToChildExportAndRead(reader, (int)entry.LocalExportIndex);
-                            break;
+                        //No idea if this shit goes in order but we'll try that
+                        zenImport = GraphData[j].Item1;
+                        j++;
                     }
+
+					ZenImports.Add(zenImport);
+				}
+
+                Imports = new List<Import>();
+                foreach (var zenImport in ZenImports)
+                {
+                    Imports.Add(zenImport.ToImport(this));
                 }
-            }
+
+				//Lets go back to those exports fill them in with proper data
+				reader.BaseStream.Seek(ExportMapOffset, SeekOrigin.Begin);
+				Exports = new List<Export>();
+				int exportMapEntrySize = (int)Export.GetExportMapEntrySize(this);
+				for (int i = 0; i < (ExportBundlesOffset - ExportMapOffset) / exportMapEntrySize; i++)
+				{
+					var newExport = new Export(this, new byte[0]);
+					newExport.ReadExportMapEntry(reader);
+                    //Serial offset again is the one found in the original UAsset so let's adjust the size based on the header size change
+                    newExport.SerialOffset = newExport.SerialOffset - RealSerialOffset;
+					Exports.Add(newExport);
+				}
+
+                reader.BaseStream.Seek(RealCookedHeaderSize, SeekOrigin.Begin);
+
+				// end summary
+				foreach (FExportBundleHeader headr in exportBundleHeaders)
+				{
+					for (uint i = 0u; i < headr.EntryCount; i++)
+					{
+						FExportBundleEntry entry = exportBundleEntries[headr.FirstEntryIndex + i];
+						switch (entry.CommandType)
+						{
+							case EExportCommandType.ExportCommandType_Serialize:
+								ConvertExportToChildExportAndRead(reader, (int)entry.LocalExportIndex);
+								break;
+						}
+					}
+				}
+			}
+
+            
         }
 
         /// <summary>

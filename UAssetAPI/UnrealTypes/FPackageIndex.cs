@@ -102,8 +102,8 @@ namespace UAssetAPI.UnrealTypes
 
             if (asset is ZenAsset za)
             {
-                if (newIndex < 0 || newIndex >= za.Imports.Count) return null;
-                FPackageObjectIndex poi = za.Imports[newIndex];
+                if (newIndex < 0 || newIndex >= za.ZenImports.Count) return null;
+                FPackageObjectIndex poi = za.ZenImports[newIndex];
                 return poi.ToImport(za);
             }
             else if (asset is UAsset uas)
