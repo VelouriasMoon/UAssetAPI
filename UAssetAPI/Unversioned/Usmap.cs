@@ -321,17 +321,19 @@ namespace UAssetAPI.Unversioned
         /// <summary>
         /// Pre-computed CityHash64 map for all relevant strings
         /// </summary>
-        public Dictionary<ulong, string> CityHash64Map;
+        public Dictionary<ulong, Tuple<string, string>> CityHash64Map;
 
-        private void AddCityHash64MapEntry(string val)
+        private void AddCityHash64MapEntry(string hashedPath, string ClassName)
         {
-            ulong hsh = CRCGenerator.GenerateImportHashFromObjectPath(val);
+            ulong hsh = CRCGenerator.GenerateImportHashFromObjectPath(hashedPath);
+            //All hashes coming from the game code should be script imports, null and package are only used for importing from uassets 
+            hsh = FPackageObjectIndex.Pack(EPackageObjectIndexType.ScriptImport, hsh);
             if (CityHash64Map.ContainsKey(hsh))
             {
-                if (CRCGenerator.ToLower(CityHash64Map[hsh]) == CRCGenerator.ToLower(val)) return;
-                throw new FormatException("CityHash64 hash collision between \"" + CityHash64Map[hsh] + "\" and \"" + val + "\"");
+                if (CRCGenerator.ToLower(CityHash64Map[hsh].Item1) == CRCGenerator.ToLower(hashedPath)) return;
+                throw new FormatException("CityHash64 hash collision between \"" + CityHash64Map[hsh] + "\" and \"" + hashedPath + "\"");
             }
-            CityHash64Map.Add(hsh, val);
+            CityHash64Map.Add(hsh, new Tuple<string, string>(hashedPath, ClassName));
         }
 
         private static UsmapPropertyData ConvertFPropertyToUsmapPropertyData(StructExport exp, FProperty entry)
@@ -676,7 +678,7 @@ namespace UAssetAPI.Unversioned
         public void Read(UsmapBinaryReader compressedReader)
         {
             var reader = ReadHeader(compressedReader);
-            CityHash64Map = new Dictionary<ulong, string>();
+            CityHash64Map = new Dictionary<ulong, Tuple<string, string>>();
 
             // part 1: names
             //Console.WriteLine(reader.BaseStream.Position);
@@ -756,13 +758,12 @@ namespace UAssetAPI.Unversioned
                         for (int i = 0; i < ppthNumEnums; i++)
                         {
                             enumIndexMap[i].ModulePath = reader.ReadName();
-                            AddCityHash64MapEntry(enumIndexMap[i].ModulePath + "." + enumIndexMap[i].Name);
+                            AddCityHash64MapEntry(enumIndexMap[i].ModulePath + "/" + enumIndexMap[i].Name, "Class");
                         }
                         int ppthNumSchemas = reader.ReadInt32();
                         for (int i = 0; i < ppthNumSchemas; i++)
                         {
                             schemaIndexMap[i].ModulePath = reader.ReadName();
-                            AddCityHash64MapEntry(schemaIndexMap[i].ModulePath + "." + schemaIndexMap[i].Name);
                         }
 
                         if (reader.BaseStream.Position != endPos) throw new FormatException("Failed to parse extension " + extId + ": ended at " + reader.BaseStream.Position + ", expected " + endPos);
@@ -780,7 +781,8 @@ namespace UAssetAPI.Unversioned
                         for (int i = 0; i < eatrNumSchemas; i++)
                         {
                             schemaIndexMap[i].StructKind = (UsmapStructKind)reader.ReadByte();
-                            schemaIndexMap[i].StructOrClassFlags = reader.ReadInt32();
+							AddCityHash64MapEntry(schemaIndexMap[i].ModulePath + "/" + schemaIndexMap[i].Name, Enum.GetName(typeof(UsmapStructKind), schemaIndexMap[i].StructKind).Substring(1));
+							schemaIndexMap[i].StructOrClassFlags = reader.ReadInt32();
                             int eatrNumProps = reader.ReadInt32();
                             for (int j = 0; j < eatrNumProps; j++)
                             {
@@ -816,7 +818,7 @@ namespace UAssetAPI.Unversioned
                         for (int i = 0; i < schemaIndexMap.Length; i++)
                         {
                             schemaIndexMap[i].ModulePath = modulePaths[numModulePaths > byte.MaxValue ? reader.ReadUInt16() : reader.ReadByte()];
-                            AddCityHash64MapEntry(schemaIndexMap[i].ModulePath + "." + schemaIndexMap[i].Name);
+                            AddCityHash64MapEntry(schemaIndexMap[i].ModulePath + "/" + schemaIndexMap[i].Name, "");
                         }
 
                         if (reader.BaseStream.Position != endPos) throw new FormatException("Failed to parse extension " + extId + ": ended at " + reader.BaseStream.Position + ", expected " + endPos);
