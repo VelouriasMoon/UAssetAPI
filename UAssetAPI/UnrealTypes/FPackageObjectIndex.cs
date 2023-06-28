@@ -110,26 +110,26 @@ namespace UAssetAPI.UnrealTypes
             //throw new NotImplementedException("ZenAsset ToImport is currently unimplemented");
 
             var res = new Import();
-            switch (Type)
+			if (asset.Mappings.CityHash64Map.ContainsKey(Hash))
+			{
+				res.ObjectName = new FName(asset, asset.Mappings.CityHash64Map[Hash].Name);
+				res.ClassPackage = FName.DefineDummy(asset, "None");
+				res.ClassName = new FName(asset, asset.Mappings.CityHash64Map[Hash].ClassName);
+			}
+			else if (asset.CityHash64Map.ContainsKey(Hash))
+			{
+				res.ObjectName = new FName(asset, asset.CityHash64Map[Hash].Name);
+				res.ClassPackage = FName.DefineDummy(asset, "None");
+				res.ClassName = new FName(asset, asset.CityHash64Map[Hash].ClassName);
+			}
+            else
             {
-                case EPackageObjectIndexType.Null:
-                    return null;
-                case EPackageObjectIndexType.Export:
-                    throw new InvalidOperationException("Attempt to call ToImport on an FPackageObjectIndex with type " + Type);
-                case EPackageObjectIndexType.ScriptImport:
-                    //var test = asset.GlobalData.ScriptObjectEntriesMap[this];
-
-                    string derivedStr = asset.GetStringFromCityHash64(Hash); // TODO: why do some hashes not show up here properly? need to get some test cases with their actual intended values
-                    string[] derivedStrSplit = derivedStr?.Split('.');
-                    res.ObjectName = null; // TODO: how can we derive this value?
-                    res.ClassPackage = FName.DefineDummy(asset, derivedStrSplit?[0] ?? Hash.ToString());
-                    res.ClassName = FName.DefineDummy(asset, derivedStrSplit?[1] ?? Hash.ToString());
-                    res.OuterIndex = new FPackageIndex(0);
-                    break;
-                case EPackageObjectIndexType.PackageImport:
-                    throw new NotImplementedException("ToImport on an FPackageObjectIndex with type " + Type + " is currently unimplemented");
-            }
-            return res;
+				res.ObjectName = FName.DefineDummy(asset, $"{Hash}");
+				res.ClassPackage = FName.DefineDummy(asset, "None");
+				res.ClassName = FName.DefineDummy(asset, "Class");
+			}
+			res.OuterIndex = new FPackageIndex(0);
+			return res;
         }
 
         public override int GetHashCode()

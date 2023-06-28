@@ -622,6 +622,14 @@ namespace UAssetAPI
                 }
 
                 long extrasLen = nextStarting - reader.BaseStream.Position;
+
+                //A little hacky but it works for now, Zen Assets don't have the last 4 bytes normal assets do
+                if (extrasLen == -4)
+                {
+                    extrasLen = 0;
+                    nextStarting += 4;
+                }
+
                 if (extrasLen < 0)
                 {
                     throw new FormatException("Invalid padding at end of export " + (i + 1) + ": " + extrasLen + " bytes");

@@ -193,24 +193,36 @@ namespace UAssetAPI.IO
 
         public List<Tuple<FPackageObjectIndex, List<FInternalArc>>> GraphData;
 
-        private Dictionary<ulong, string> CityHash64Map = new Dictionary<ulong, string>();
-        private void AddCityHash64MapEntryRaw(string val)
+        public Dictionary<ulong, UsmapHashData> CityHash64Map = new Dictionary<ulong, UsmapHashData>();
+        private Dictionary<ulong, FPackageIndex> ImportHashMap = new Dictionary<ulong, FPackageIndex>();
+
+        /// <summary>
+        /// Hashes the input path and added relevant info the hash map
+        /// </summary>
+        /// <param name="Name">Object Name of the import</param>
+        /// <param name="Path">Full path of the import that gets hashed</param>
+        /// <param name="ClassName">Class Name of the import</param>
+        /// <param name="type">Hashing type</param>
+        /// <exception cref="FormatException"></exception>
+        private void AddCityHash64MapEntry(string Name, string Path, string ClassName, EPackageObjectIndexType type = 0)
         {
-            ulong hsh = CRCGenerator.GenerateImportHashFromObjectPath(val);
+            ulong hsh = CRCGenerator.GenerateImportHashFromObjectPath(Path);
+            hsh = FPackageObjectIndex.Pack(type, hsh);
             if (CityHash64Map.ContainsKey(hsh))
             {
-                if (CRCGenerator.ToLower(CityHash64Map[hsh]) == CRCGenerator.ToLower(val)) return;
-                throw new FormatException("CityHash64 hash collision between \"" + CityHash64Map[hsh] + "\" and \"" + val + "\"");
+                if (CRCGenerator.ToLower(CityHash64Map[hsh].Path) == CRCGenerator.ToLower(Path)) return;
+                throw new FormatException("CityHash64 hash collision between \"" + CityHash64Map[hsh] + "\" and \"" + Path + "\"");
             }
-            CityHash64Map.Add(hsh, val);
+            CityHash64Map.Add(hsh, new UsmapHashData() { Name = Name, Path = Path, ClassName = ClassName, Type = type });
         }
         public string GetStringFromCityHash64(ulong val)
         {
-            if (CityHash64Map.ContainsKey(val)) return CityHash64Map[val];
-            if (Mappings.CityHash64Map.ContainsKey(val)) return Mappings.CityHash64Map[val].Item1;
+            if (CityHash64Map.ContainsKey(val)) return CityHash64Map[val].Path;
+            if (Mappings.CityHash64Map.ContainsKey(val)) return Mappings.CityHash64Map[val].Name;
             return null;
         }
 
+		/*
         /// <summary>
         /// Finds the class path and export name of the SuperStruct of this asset, if it exists.
         /// </summary>
@@ -225,16 +237,17 @@ namespace UAssetAPI.IO
         {
             throw new NotImplementedException("Unimplemented method ZenAsset.GetParentClassExportName");
         }
+        */
 
-        /// <summary>
-        /// Reads an asset into memory.
-        /// </summary>
-        /// <param name="reader">The input reader.</param>
-        /// <param name="manualSkips">An array of export indexes to skip parsing. For most applications, this should be left blank.</param>
-        /// <param name="forceReads">An array of export indexes that must be read, overriding entries in the manualSkips parameter. For most applications, this should be left blank.</param>
-        /// <exception cref="UnknownEngineVersionException">Thrown when <see cref="ObjectVersion"/> is unspecified.</exception>
-        /// <exception cref="FormatException">Throw when the asset cannot be parsed correctly.</exception>
-        public override void Read(AssetBinaryReader reader, int[] manualSkips = null, int[] forceReads = null)
+		/// <summary>
+		/// Reads an asset into memory.
+		/// </summary>
+		/// <param name="reader">The input reader.</param>
+		/// <param name="manualSkips">An array of export indexes to skip parsing. For most applications, this should be left blank.</param>
+		/// <param name="forceReads">An array of export indexes that must be read, overriding entries in the manualSkips parameter. For most applications, this should be left blank.</param>
+		/// <exception cref="UnknownEngineVersionException">Thrown when <see cref="ObjectVersion"/> is unspecified.</exception>
+		/// <exception cref="FormatException">Throw when the asset cannot be parsed correctly.</exception>
+		public override void Read(AssetBinaryReader reader, int[] manualSkips = null, int[] forceReads = null)
         {
             if (Mappings == null) throw new InvalidOperationException();
             if (ObjectVersion == ObjectVersion.UNKNOWN) throw new UnknownEngineVersionException("Cannot begin serialization before an object version is specified");
@@ -270,7 +283,7 @@ namespace UAssetAPI.IO
                 ClearNameIndexList();
                 foreach (var entry in tempNameMap)
                 {
-                    AddCityHash64MapEntryRaw(entry.Value);
+                    //AddCityHash64MapEntryRaw(entry.Value);
                     AddNameReference(entry, true);
                 }
 
@@ -390,19 +403,17 @@ namespace UAssetAPI.IO
 					hashes[i] = reader.ReadUInt64();
 				}
 
-                Dictionary<ulong, FString> ScriptImportHashMap = new Dictionary<ulong, FString>();
-				Dictionary<ulong, FString> PackageImportHashMap = new Dictionary<ulong, FString>();
-				Dictionary<ulong, FString> NullImportHashMap = new Dictionary<ulong, FString>();
-
                 //Make a map of possible Script Imports
                 foreach (var script in nameMap.Where(x => x.Value.Contains("/Script/")))
                 {
-					ScriptImportHashMap.Add(FPackageObjectIndex.Pack(EPackageObjectIndexType.ScriptImport, CRCGenerator.GenerateImportHashFromObjectPath(script)), script);
+                    AddCityHash64MapEntry(script.Value, script.Value, "Package", EPackageObjectIndexType.ScriptImport);
 					foreach (var name in nameMap.Where(y => !y.Value.Contains("/Game/") && !y.Value.Contains("/Script/")))
 					{
-                        FString fString = new FString($"{script}/{name}");
-                        ulong ImportHash = FPackageObjectIndex.Pack(EPackageObjectIndexType.ScriptImport, CRCGenerator.GenerateImportHashFromObjectPath(fString));
-						ScriptImportHashMap.Add(ImportHash, fString);
+                        string fString = $"{script}/{name}";
+                        if (name.Value.Contains("Default__"))
+							AddCityHash64MapEntry(name.Value, fString, name.Value.Substring(9), EPackageObjectIndexType.ScriptImport);
+                        else
+						    AddCityHash64MapEntry(name.Value, fString, "Class", EPackageObjectIndexType.ScriptImport);
 					}
 				}
 
@@ -411,16 +422,15 @@ namespace UAssetAPI.IO
                 {
                     foreach (var name in nameMap.Where(y => !y.Value.Contains("/Game/") && !y.Value.Contains("/Script/")))
                     {
-						FString fString = new FString($"{script}.{name}");
-						ulong ImportHash = FPackageObjectIndex.Pack(EPackageObjectIndexType.PackageImport, CRCGenerator.GenerateImportHashFromObjectPath(fString));
-						PackageImportHashMap.Add(ImportHash, fString);
+						string fString = $"{script}.{name}";
+                        AddCityHash64MapEntry(name.Value, fString, "Class", EPackageObjectIndexType.PackageImport);
 					}
                 }
 
 				ClearNameIndexList();
 				foreach (var entry in nameMap)
                 {
-                    NullImportHashMap.Add(FPackageObjectIndex.Pack(EPackageObjectIndexType.Null, CRCGenerator.GenerateImportHashFromObjectPath(entry)), entry);
+                    AddCityHash64MapEntry(entry.Value, entry.Value, "Package", EPackageObjectIndexType.Null);
 					AddNameReference(entry, true);
 				}
 
@@ -485,46 +495,29 @@ namespace UAssetAPI.IO
 				reader.BaseStream.Seek(ImportMapOffset, SeekOrigin.Begin);
 				ZenImports = new List<FPackageObjectIndex>();
                 int ImportCount = (ExportMapOffset - ImportMapOffset) / sizeof(ulong);
+				int GraphCount = 0;
 				for (int i = 0; i < ImportCount; i++)
 				{
                     var zenImport = FPackageObjectIndex.Read(reader);
-
-                    int j = 0;
                     if (zenImport.Hash == 0xFFFFFFFFFFFFFFFF)
                     {
                         //No idea if this shit goes in order but we'll try that
-                        zenImport = GraphData[j].Item1;
-                        j++;
+                        zenImport = GraphData[GraphCount].Item1;
+						GraphCount++;
                     }
 
 					ZenImports.Add(zenImport);
 				}
 
+                //Convert the ZenImports into Real Imports
                 Imports = new List<Import>();
+                int importCount = -1;
                 foreach (var zenImport in ZenImports)
                 {
-					var res = new Import();
-                    FString ObjectName = new FString();
-					switch (zenImport.Type)
-                    {
-						case EPackageObjectIndexType.Export:
-							throw new InvalidOperationException("Attempt to call ToImport on an FPackageObjectIndex with type " + zenImport.Type);
-                        case EPackageObjectIndexType.ScriptImport:
-                            ScriptImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
-                            break;
-                        case EPackageObjectIndexType.PackageImport:
-                            PackageImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
-                            break;
-                        case EPackageObjectIndexType.Null:
-                            NullImportHashMap.TryGetValue(zenImport.Hash, out ObjectName);
-                            break;
-					}
-                    res.ObjectName = new FName(this, Path.GetFileNameWithoutExtension(ObjectName.Value));
-                    res.ClassPackage = new FName(this, Path.GetDirectoryName(ObjectName.Value).Replace("\\", "/") + "/");
-					res.ClassName = FName.DefineDummy(this, ObjectName);
-					res.OuterIndex = new FPackageIndex(0);
-
+                    Import res = zenImport.ToImport(this);
+                    ImportHashMap.Add(zenImport.Hash, new FPackageIndex(importCount));
                     Imports.Add(res);
+                    importCount--;
 				}
 
 				//Lets go back to those exports fill them in with proper data
@@ -538,6 +531,19 @@ namespace UAssetAPI.IO
                     //Serial offset again is the one found in the original UAsset so let's adjust the size based on the header size change
                     newExport.SerialOffset = newExport.SerialOffset - RealSerialOffset;
 					Exports.Add(newExport);
+				}
+
+                //Get import number of the from the zen indices
+                foreach (var export in Exports)
+                {
+                    if (ImportHashMap.ContainsKey(export.Zen_ClassIndex.Hash))
+						export.ClassIndex = ImportHashMap[export.Zen_ClassIndex.Hash];
+                    if (ImportHashMap.ContainsKey(export.Zen_TemplateIndex.Hash))
+						export.TemplateIndex = ImportHashMap[export.Zen_TemplateIndex.Hash];
+					if (ImportHashMap.ContainsKey(export.Zen_OuterIndex.Hash))
+						export.OuterIndex = ImportHashMap[export.Zen_OuterIndex.Hash];
+					if (ImportHashMap.ContainsKey(export.Zen_SuperIndex.Hash))
+						export.SuperIndex = ImportHashMap[export.Zen_SuperIndex.Hash];
 				}
 
                 reader.BaseStream.Seek(RealCookedHeaderSize, SeekOrigin.Begin);
@@ -557,8 +563,28 @@ namespace UAssetAPI.IO
 					}
 				}
 			}
+        }
 
-            
+        public UAsset ToUasset()
+        {
+            UAsset uAsset = new UAsset();
+
+            uAsset.Imports = Imports;
+            uAsset.Exports = Exports;
+            uAsset.nameMapLookup = nameMapLookup;
+            uAsset.nameMapIndexList = nameMapIndexList;
+            uAsset.ObjectVersion = ObjectVersion;
+            uAsset.ObjectVersionUE5 = ObjectVersionUE5;
+            uAsset.FolderName = new FString("None");
+            uAsset.CustomVersionContainer = new List<CustomVersion>();
+            uAsset.DependsMap = new List<int[]>();
+            uAsset.SoftPackageReferenceList = new List<FString>();
+            for (int i = 0; i < Exports.Count; i++)
+            {
+
+            }
+
+            return uAsset;
         }
 
         /// <summary>
